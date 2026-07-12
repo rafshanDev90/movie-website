@@ -23,8 +23,9 @@ app.use("/api/v1/movies", movieRoutes);
 app.use("/api/v1/lists", listRoutes);
 app.use("/api/v1", uploadRoutes);
 
+app.use("/uploads", express.static(path.join(path.resolve(), "backend/uploads")));
+
 if (ENV_VARS.NODE_ENV === "production") {
-  app.use("/uploads", express.static(path.join(path.resolve(), "backend/uploads")));
   app.use("/admin", express.static(path.join(path.resolve(), "admin/dist")));
   app.use(express.static(path.join(path.resolve(), "client/dist")));
 
