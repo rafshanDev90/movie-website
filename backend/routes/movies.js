@@ -1,5 +1,7 @@
 import express from "express";
 import mongoose from "mongoose";
+import path from "path";
+import fs from "fs";
 import Movie from "../models/Movie.js";
 import adminAuth from "../middleware/adminAuth.js";
 
@@ -138,8 +140,28 @@ router.delete("/:id", adminAuth, async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid movie ID" });
     }
 
-    const movie = await Movie.findByIdAndDelete(req.params.id);
+    const movie = await Movie.findById(req.params.id);
     if (!movie) return res.status(404).json({ success: false, message: "Movie not found" });
+
+    const uploadsDir = path.join(path.resolve(), "backend/uploads");
+    const unlink = async (url) => {
+      if (!url) return;
+      const filename = path.basename(url);
+      const dir = url.includes("/videos/") ? "videos" : "images";
+      try {
+        await fs.promises.unlink(path.join(uploadsDir, dir, filename));
+      } catch {}
+    };
+
+    await Promise.all([
+      unlink(movie.image),
+      unlink(movie.imageTitle),
+      unlink(movie.imageSmall),
+      unlink(movie.trailer),
+      unlink(movie.video),
+    ]);
+
+    await Movie.findByIdAndDelete(req.params.id);
     res.status(200).json({ success: true, message: "Movie deleted" });
   } catch (error) {
     res.status(500).json({ success: false, message: "Internal server error" });
