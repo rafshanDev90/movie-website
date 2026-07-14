@@ -3,6 +3,7 @@ import path from "path";
 import fs from "fs";
 import upload from "../services/fileService.js";
 import adminAuth from "../middleware/adminAuth.js";
+import asyncHandler from "../utils/asyncHandler.js";
 
 const router = express.Router();
 
@@ -37,7 +38,7 @@ router.post("/upload", adminAuth, upload.single("file"), (req, res) => {
   res.status(200).json({ success: true, url: fileUrl, filename: req.file.filename });
 });
 
-router.get("/stream/:filename", async (req, res) => {
+router.get("/stream/:filename", asyncHandler(async (req, res) => {
   const safe = sanitizeFilename(req.params.filename);
   if (!safe) {
     return res.status(400).json({ success: false, message: "Invalid filename" });
@@ -45,52 +46,58 @@ router.get("/stream/:filename", async (req, res) => {
 
   const filePath = path.join(VIDEOS_DIR, safe);
 
+  let stat;
   try {
-    const stat = await fs.promises.stat(filePath);
-    const fileSize = stat.size;
-    const range = req.headers.range;
-
-    if (range) {
-      const parts = range.replace(/bytes=/, "").split("-");
-      const start = parseInt(parts[0], 10);
-      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-      const chunkSize = end - start + 1;
-
-      const file = fs.createReadStream(filePath, { start, end });
-      res.writeHead(206, {
-        "Content-Range": `bytes ${start}-${end}/${fileSize}`,
-        "Accept-Ranges": "bytes",
-        "Content-Length": chunkSize,
-        "Content-Type": getMimeType(safe),
-      });
-      file.pipe(res);
-    } else {
-      res.writeHead(200, {
-        "Content-Length": fileSize,
-        "Content-Type": getMimeType(safe),
-      });
-      fs.createReadStream(filePath).pipe(res);
+    stat = await fs.promises.stat(filePath);
+  } catch (err) {
+    if (err.code === "ENOENT") {
+      return res.status(404).json({ success: false, message: "File not found" });
     }
-  } catch {
-    return res.status(404).json({ success: false, message: "File not found" });
+    throw err;
   }
-});
 
-router.get("/download/:filename", async (req, res) => {
+  const fileSize = stat.size;
+  const range = req.headers.range;
+
+  if (range) {
+    const parts = range.replace(/bytes=/, "").split("-");
+    const start = parseInt(parts[0], 10);
+    const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+    const chunkSize = end - start + 1;
+
+    const file = fs.createReadStream(filePath, { start, end });
+    res.writeHead(206, {
+      "Content-Range": `bytes ${start}-${end}/${fileSize}`,
+      "Accept-Ranges": "bytes",
+      "Content-Length": chunkSize,
+      "Content-Type": getMimeType(safe),
+    });
+    file.pipe(res);
+  } else {
+    res.writeHead(200, {
+      "Content-Length": fileSize,
+      "Content-Type": getMimeType(safe),
+    });
+    fs.createReadStream(filePath).pipe(res);
+  }
+}));
+
+router.get("/download/:filename", asyncHandler(async (req, res) => {
   const safe = sanitizeFilename(req.params.filename);
   if (!safe) {
     return res.status(400).json({ success: false, message: "Invalid filename" });
   }
 
   const filePath = path.join(VIDEOS_DIR, safe);
-
   try {
     await fs.promises.access(filePath);
-  } catch {
-    return res.status(404).json({ success: false, message: "File not found" });
+  } catch (err) {
+    if (err.code === "ENOENT") {
+      return res.status(404).json({ success: false, message: "File not found" });
+    }
+    throw err;
   }
-
   res.download(filePath, safe);
-});
+}));
 
 export default router;

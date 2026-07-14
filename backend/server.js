@@ -9,6 +9,9 @@ import { rateLimit } from "express-rate-limit";
 import { ENV_VARS } from "./config/envVars.js";
 import connectDB from "./config/db.js";
 
+import requestId from "./middleware/requestId.js";
+import errorHandler from "./middleware/errorHandler.js";
+
 import authRoutes from "./routes/auth.js";
 import movieRoutes from "./routes/movies.js";
 import listRoutes from "./routes/lists.js";
@@ -27,6 +30,7 @@ if (ENV_VARS.NODE_ENV === "production") {
   ALLOWED_ORIGINS.push("https://yourdomain.com");
 }
 
+app.use(requestId);
 app.use(helmet());
 app.use(compression());
 app.use(morgan("combined"));
@@ -56,6 +60,10 @@ app.use(globalLimiter);
 
 app.use(express.json({ limit: "1mb" }));
 
+app.get("/health", (req, res) => {
+  res.status(200).json({ status: "ok" });
+});
+
 app.use("/api/v1/auth", authRoutes);
 app.use("/api/v1/movies", movieRoutes);
 app.use("/api/v1/lists", listRoutes);
@@ -76,16 +84,11 @@ if (ENV_VARS.NODE_ENV === "production") {
   });
 }
 
-app.get("/health", (req, res) => {
-  res.status(200).json({ status: "ok" });
+app.use((req, res) => {
+  res.status(404).json({ success: false, message: "Route not found" });
 });
 
-app.use((err, req, res, next) => {
-  if (err.message === "Not allowed by CORS") {
-    return res.status(403).json({ success: false, message: "CORS policy denied" });
-  }
-  next(err);
-});
+app.use(errorHandler);
 
 const server = app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
@@ -95,9 +98,21 @@ const server = app.listen(PORT, () => {
 server.timeout = 30000;
 
 process.on("SIGTERM", () => {
+  console.log("SIGTERM received, shutting down gracefully");
   server.close(() => process.exit(0));
 });
 
 process.on("SIGINT", () => {
+  console.log("SIGINT received, shutting down gracefully");
   server.close(() => process.exit(0));
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled Rejection:", reason);
+  server.close(() => process.exit(1));
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught Exception:", err);
+  server.close(() => process.exit(1));
 });

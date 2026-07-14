@@ -162,14 +162,14 @@ async function testPhase1() {
 
   section("Error Message Hiding");
 
-  await test("Returns generic error message (not error.message)", async () => {
-    const content = fileRead("backend/routes/movies.js");
-    assert.ok(content.includes('"Internal server error"'), "Generic error message not found");
+  await test("Global error handler returns generic message in production", async () => {
+    const content = fileRead("backend/middleware/errorHandler.js");
+    assert.ok(content.includes('"Internal server error"'), "Generic error message not found in errorHandler");
   });
 
-  await test("Lists routes also hide errors", async () => {
-    const content = fileRead("backend/routes/lists.js");
-    assert.ok(content.includes('"Internal server error"'), "Generic error message not found in lists");
+  await test("Global error handler hides stack traces in production", async () => {
+    const content = fileRead("backend/middleware/errorHandler.js");
+    assert.ok(content.includes("NODE_ENV") && content.includes("stack"), "Stack trace hiding not implemented");
   });
 
   section("File Cleanup on Delete");
@@ -337,6 +337,145 @@ async function testPhase2() {
   });
 }
 
+// ─── Phase 3 Tests ───────────────────────────────────────────
+
+async function testPhase3() {
+  section("Global Error System: asyncHandler");
+
+  await test("asyncHandler utility exists", async () => {
+    const content = fileRead("backend/utils/asyncHandler.js");
+    assert.ok(content.includes("Promise.resolve"), "asyncHandler does not wrap with Promise.resolve");
+    assert.ok(content.includes(".catch(next)"), "asyncHandler does not forward errors to next()");
+  });
+
+  await test("Movies routes use asyncHandler (no manual try/catch)", async () => {
+    const content = fileRead("backend/routes/movies.js");
+    assert.ok(content.includes("asyncHandler"), "asyncHandler not imported in movies.js");
+    assert.ok(!content.includes("} catch (error)"), "Manual try/catch still present in movies.js");
+  });
+
+  await test("Lists routes use asyncHandler (no manual try/catch)", async () => {
+    const content = fileRead("backend/routes/lists.js");
+    assert.ok(content.includes("asyncHandler"), "asyncHandler not imported in lists.js");
+    assert.ok(!content.includes("} catch (error)"), "Manual try/catch still present in lists.js");
+  });
+
+  await test("Auth routes use asyncHandler (no manual try/catch)", async () => {
+    const content = fileRead("backend/routes/auth.js");
+    assert.ok(content.includes("asyncHandler"), "asyncHandler not imported in auth.js");
+    assert.ok(!content.includes("} catch"), "Manual try/catch still present in auth.js");
+  });
+
+  await test("Upload routes use asyncHandler", async () => {
+    const content = fileRead("backend/routes/upload.js");
+    assert.ok(content.includes("asyncHandler"), "asyncHandler not imported in upload.js");
+  });
+
+  section("Global Error System: errorHandler");
+
+  await test("Global error handler middleware exists", async () => {
+    const content = fileRead("backend/middleware/errorHandler.js");
+    assert.ok(content.includes("err, req, res, next"), "Not a valid Express error handler signature");
+  });
+
+  await test("Error handler imported and mounted in server.js", async () => {
+    const content = fileRead("backend/server.js");
+    assert.ok(content.includes("errorHandler"), "errorHandler not imported in server.js");
+    assert.ok(content.includes("app.use(errorHandler)"), "errorHandler not mounted as middleware");
+  });
+
+  await test("Error handler catches CORS errors", async () => {
+    const content = fileRead("backend/middleware/errorHandler.js");
+    assert.ok(content.includes("Not allowed by CORS"), "CORS error handling not found");
+  });
+
+  await test("Error handler catches duplicate key errors (code 11000)", async () => {
+    const content = fileRead("backend/middleware/errorHandler.js");
+    assert.ok(content.includes("11000"), "Duplicate key error handling not found");
+  });
+
+  await test("Error handler catches validation errors", async () => {
+    const content = fileRead("backend/middleware/errorHandler.js");
+    assert.ok(content.includes("ValidationError"), "ValidationError handling not found");
+  });
+
+  await test("Error handler catches invalid ObjectId (CastError)", async () => {
+    const content = fileRead("backend/middleware/errorHandler.js");
+    assert.ok(content.includes("CastError"), "CastError handling not found");
+  });
+
+  section("Global Error System: 404 Handler");
+
+  await test("404 catch-all route exists in server.js", async () => {
+    const content = fileRead("backend/server.js");
+    assert.ok(content.includes("Route not found"), "404 catch-all route not found");
+  });
+
+  await test("Unknown API route returns 404", async () => {
+    const res = await req("GET", "/api/v1/nonexistent-endpoint");
+    assert.strictEqual(res.status, 404);
+    assert.strictEqual(res.json.success, false);
+  });
+
+  section("Global Error System: Unhandled Rejection/Exception");
+
+  await test("unhandledRejection handler exists", async () => {
+    const content = fileRead("backend/server.js");
+    assert.ok(content.includes('process.on("unhandledRejection"'), "unhandledRejection handler not found");
+  });
+
+  await test("uncaughtException handler exists", async () => {
+    const content = fileRead("backend/server.js");
+    assert.ok(content.includes('process.on("uncaughtException"'), "uncaughtException handler not found");
+  });
+
+  section("Global Error System: Error Response Hiding");
+
+  await test("Error handler hides details in production mode", async () => {
+    const content = fileRead("backend/middleware/errorHandler.js");
+    assert.ok(content.includes('"development"'), "Development mode check not found");
+    assert.ok(!content.includes("err.stack") || content.includes('NODE_ENV === "development"'), "Stack trace only exposed in development");
+  });
+}
+
+// ─── Phase 4 Tests ───────────────────────────────────────────
+
+async function testPhase4() {
+  section("Request ID Correlation");
+
+  await test("requestId middleware exists", async () => {
+    const content = fileRead("backend/middleware/requestId.js");
+    assert.ok(content.includes("crypto"), "crypto module not used for ID generation");
+    assert.ok(content.includes("req.id"), "Request ID not attached to req object");
+    assert.ok(content.includes("X-Request-Id"), "X-Request-Id header not set");
+  });
+
+  await test("requestId imported and mounted in server.js", async () => {
+    const content = fileRead("backend/server.js");
+    assert.ok(content.includes("requestId"), "requestId not imported in server.js");
+    assert.ok(content.includes("app.use(requestId)"), "requestId not mounted as middleware");
+  });
+
+  await test("X-Request-Id header present on responses", async () => {
+    const res = await req("GET", "/health");
+    const requestId = res.headers.get("x-request-id");
+    assert.ok(requestId, "X-Request-Id header not found on response");
+    assert.ok(requestId.length > 0, "X-Request-Id header is empty");
+  });
+
+  await test("X-Request-Id is a valid UUID", async () => {
+    const res = await req("GET", "/health");
+    const requestId = res.headers.get("x-request-id");
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    assert.ok(uuidRegex.test(requestId), `X-Request-Id is not a valid UUID: ${requestId}`);
+  });
+
+  await test("Server.js has log messages for graceful shutdown", async () => {
+    const content = fileRead("backend/server.js");
+    assert.ok(content.includes("shutting down gracefully"), "Graceful shutdown log message not found");
+  });
+}
+
 // ─── Run All Tests ───────────────────────────────────────────
 
 async function run() {
@@ -354,6 +493,8 @@ async function run() {
 
   await testPhase1();
   await testPhase2();
+  await testPhase3();
+  await testPhase4();
 
   console.log(`\n━━━ Results ━━━`);
   console.log(`  ✓ ${passed} passed`);

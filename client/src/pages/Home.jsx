@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
 import axios from "axios";
 import MovieSlider from "../components/MovieSlider";
+import TelegramBanner from "../components/TelegramBanner";
 
 function Home() {
   const [featured, setFeatured] = useState(null);
@@ -49,6 +50,8 @@ function Home() {
           </div>
         </div>
       )}
+
+      <TelegramBanner />
 
       <div className="py-6 space-y-2">
         <MovieSlider title="Movies" movies={movies} />

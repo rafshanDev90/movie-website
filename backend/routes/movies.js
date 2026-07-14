@@ -4,6 +4,7 @@ import path from "path";
 import fs from "fs";
 import Movie from "../models/Movie.js";
 import adminAuth from "../middleware/adminAuth.js";
+import asyncHandler from "../utils/asyncHandler.js";
 
 const router = express.Router();
 
@@ -21,151 +22,113 @@ function pickFields(obj, allowed) {
   return picked;
 }
 
-router.get("/", async (req, res) => {
-  try {
-    const query = {};
-    if (req.query.type === "series") query.isSeries = true;
-    if (req.query.type === "movie") query.isSeries = false;
+router.get("/", asyncHandler(async (req, res) => {
+  const query = {};
+  if (req.query.type === "series") query.isSeries = true;
+  if (req.query.type === "movie") query.isSeries = false;
 
-    const page = Math.max(1, parseInt(req.query.page) || 1);
-    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 50));
-    const skip = (page - 1) * limit;
+  const page = Math.max(1, parseInt(req.query.page) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 50));
+  const skip = (page - 1) * limit;
 
-    const movies = await Movie.find(query).sort({ createdAt: -1 }).skip(skip).limit(limit);
-    const total = await Movie.countDocuments(query);
+  const movies = await Movie.find(query).sort({ createdAt: -1 }).skip(skip).limit(limit);
+  const total = await Movie.countDocuments(query);
 
-    res.status(200).json({ success: true, data: movies, total, page, pages: Math.ceil(total / limit) });
-  } catch (error) {
-    res.status(500).json({ success: false, message: "Internal server error" });
+  res.status(200).json({ success: true, data: movies, total, page, pages: Math.ceil(total / limit) });
+}));
+
+router.get("/random", asyncHandler(async (req, res) => {
+  const query = {};
+  if (req.query.type === "series") query.isSeries = true;
+  if (req.query.type === "movie") query.isSeries = false;
+
+  const count = await Movie.countDocuments(query);
+  if (count === 0) return res.status(404).json({ success: false, message: "No movies found" });
+
+  const random = Math.floor(Math.random() * count);
+  const movie = await Movie.findOne(query).skip(random);
+  res.status(200).json({ success: true, data: movie });
+}));
+
+router.get("/genres", asyncHandler(async (req, res) => {
+  const genres = await Movie.distinct("genre");
+  res.status(200).json({ success: true, data: genres });
+}));
+
+router.get("/search/:query", asyncHandler(async (req, res) => {
+  const { query } = req.params;
+  if (!query || query.length > 100) {
+    return res.status(400).json({ success: false, message: "Invalid search query" });
   }
-});
 
-router.get("/random", async (req, res) => {
-  try {
-    const query = {};
-    if (req.query.type === "series") query.isSeries = true;
-    if (req.query.type === "movie") query.isSeries = false;
+  const escaped = escapeRegex(query);
+  const movies = await Movie.find({
+    title: { $regex: escaped, $options: "i" },
+  }).limit(20);
 
-    const count = await Movie.countDocuments(query);
-    if (count === 0) return res.status(404).json({ success: false, message: "No movies found" });
+  res.status(200).json({ success: true, data: movies });
+}));
 
-    const random = Math.floor(Math.random() * count);
-    const movie = await Movie.findOne(query).skip(random);
-    res.status(200).json({ success: true, data: movie });
-  } catch (error) {
-    res.status(500).json({ success: false, message: "Internal server error" });
+router.get("/:id", asyncHandler(async (req, res) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+    return res.status(400).json({ success: false, message: "Invalid movie ID" });
   }
-});
 
-router.get("/genres", async (req, res) => {
-  try {
-    const genres = await Movie.distinct("genre");
-    res.status(200).json({ success: true, data: genres });
-  } catch (error) {
-    res.status(500).json({ success: false, message: "Internal server error" });
+  const movie = await Movie.findById(req.params.id);
+  if (!movie) return res.status(404).json({ success: false, message: "Movie not found" });
+  res.status(200).json({ success: true, data: movie });
+}));
+
+router.post("/", adminAuth, asyncHandler(async (req, res) => {
+  const data = pickFields(req.body, MOVIE_FIELDS);
+  if (!data.title) {
+    return res.status(400).json({ success: false, message: "Title is required" });
   }
-});
 
-router.get("/search/:query", async (req, res) => {
-  try {
-    const { query } = req.params;
-    if (!query || query.length > 100) {
-      return res.status(400).json({ success: false, message: "Invalid search query" });
-    }
+  const movie = new Movie(data);
+  await movie.save();
+  res.status(201).json({ success: true, data: movie });
+}));
 
-    const escaped = escapeRegex(query);
-    const movies = await Movie.find({
-      title: { $regex: escaped, $options: "i" },
-    }).limit(20);
-
-    res.status(200).json({ success: true, data: movies });
-  } catch (error) {
-    res.status(500).json({ success: false, message: "Internal server error" });
+router.put("/:id", adminAuth, asyncHandler(async (req, res) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+    return res.status(400).json({ success: false, message: "Invalid movie ID" });
   }
-});
 
-router.get("/:id", async (req, res) => {
-  try {
-    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-      return res.status(400).json({ success: false, message: "Invalid movie ID" });
-    }
+  const data = pickFields(req.body, MOVIE_FIELDS);
+  const movie = await Movie.findByIdAndUpdate(req.params.id, data, { new: true, runValidators: true });
+  if (!movie) return res.status(404).json({ success: false, message: "Movie not found" });
+  res.status(200).json({ success: true, data: movie });
+}));
 
-    const movie = await Movie.findById(req.params.id);
-    if (!movie) return res.status(404).json({ success: false, message: "Movie not found" });
-    res.status(200).json({ success: true, data: movie });
-  } catch (error) {
-    res.status(500).json({ success: false, message: "Internal server error" });
+router.delete("/:id", adminAuth, asyncHandler(async (req, res) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+    return res.status(400).json({ success: false, message: "Invalid movie ID" });
   }
-});
 
-router.post("/", adminAuth, async (req, res) => {
-  try {
-    const data = pickFields(req.body, MOVIE_FIELDS);
-    if (!data.title) {
-      return res.status(400).json({ success: false, message: "Title is required" });
-    }
+  const movie = await Movie.findById(req.params.id);
+  if (!movie) return res.status(404).json({ success: false, message: "Movie not found" });
 
-    const movie = new Movie(data);
-    await movie.save();
-    res.status(201).json({ success: true, data: movie });
-  } catch (error) {
-    if (error.code === 11000) {
-      return res.status(409).json({ success: false, message: "Movie with this title already exists" });
-    }
-    res.status(500).json({ success: false, message: "Internal server error" });
-  }
-});
+  const uploadsDir = path.join(path.resolve(), "backend/uploads");
+  const unlink = async (url) => {
+    if (!url) return;
+    const filename = path.basename(url);
+    const dir = url.includes("/videos/") ? "videos" : "images";
+    try {
+      await fs.promises.unlink(path.join(uploadsDir, dir, filename));
+    } catch {}
+  };
 
-router.put("/:id", adminAuth, async (req, res) => {
-  try {
-    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-      return res.status(400).json({ success: false, message: "Invalid movie ID" });
-    }
+  await Promise.all([
+    unlink(movie.image),
+    unlink(movie.imageTitle),
+    unlink(movie.imageSmall),
+    unlink(movie.trailer),
+    unlink(movie.video),
+  ]);
 
-    const data = pickFields(req.body, MOVIE_FIELDS);
-    const movie = await Movie.findByIdAndUpdate(req.params.id, data, { new: true, runValidators: true });
-    if (!movie) return res.status(404).json({ success: false, message: "Movie not found" });
-    res.status(200).json({ success: true, data: movie });
-  } catch (error) {
-    if (error.code === 11000) {
-      return res.status(409).json({ success: false, message: "Movie with this title already exists" });
-    }
-    res.status(500).json({ success: false, message: "Internal server error" });
-  }
-});
-
-router.delete("/:id", adminAuth, async (req, res) => {
-  try {
-    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-      return res.status(400).json({ success: false, message: "Invalid movie ID" });
-    }
-
-    const movie = await Movie.findById(req.params.id);
-    if (!movie) return res.status(404).json({ success: false, message: "Movie not found" });
-
-    const uploadsDir = path.join(path.resolve(), "backend/uploads");
-    const unlink = async (url) => {
-      if (!url) return;
-      const filename = path.basename(url);
-      const dir = url.includes("/videos/") ? "videos" : "images";
-      try {
-        await fs.promises.unlink(path.join(uploadsDir, dir, filename));
-      } catch {}
-    };
-
-    await Promise.all([
-      unlink(movie.image),
-      unlink(movie.imageTitle),
-      unlink(movie.imageSmall),
-      unlink(movie.trailer),
-      unlink(movie.video),
-    ]);
-
-    await Movie.findByIdAndDelete(req.params.id);
-    res.status(200).json({ success: true, message: "Movie deleted" });
-  } catch (error) {
-    res.status(500).json({ success: false, message: "Internal server error" });
-  }
-});
+  await Movie.findByIdAndDelete(req.params.id);
+  res.status(200).json({ success: true, message: "Movie deleted" });
+}));
 
 export default router;
