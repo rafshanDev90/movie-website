@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import path from "path";
+import fs from "fs";
 import helmet from "helmet";
 import compression from "compression";
 import morgan from "morgan";
@@ -11,6 +12,7 @@ import connectDB from "./config/db.js";
 
 import requestId from "./middleware/requestId.js";
 import errorHandler from "./middleware/errorHandler.js";
+import asyncHandler from "./utils/asyncHandler.js";
 
 import authRoutes from "./routes/auth.js";
 import movieRoutes from "./routes/movies.js";
@@ -26,8 +28,12 @@ const ALLOWED_ORIGINS = [
   "http://localhost:5000",
 ];
 
-if (ENV_VARS.NODE_ENV === "production") {
-  ALLOWED_ORIGINS.push("https://yourdomain.com");
+if (ENV_VARS.ADMIN_CORS_ORIGIN) {
+  ALLOWED_ORIGINS.push(ENV_VARS.ADMIN_CORS_ORIGIN);
+}
+
+if (ENV_VARS.CLIENT_CORS_ORIGIN) {
+  ALLOWED_ORIGINS.push(ENV_VARS.CLIENT_CORS_ORIGIN);
 }
 
 app.use(requestId);
@@ -69,7 +75,19 @@ app.use("/api/v1/movies", movieRoutes);
 app.use("/api/v1/lists", listRoutes);
 app.use("/api/v1", uploadRoutes);
 
-app.use("/uploads", express.static(path.join(path.resolve(), "backend/uploads")));
+app.get("/uploads/images/:filename", asyncHandler(async (req, res) => {
+  const safe = path.basename(req.params.filename);
+  if (safe !== req.params.filename || safe.includes("..")) {
+    return res.status(400).json({ success: false, message: "Invalid filename" });
+  }
+  const filePath = path.join(path.resolve(), "backend/uploads/images", safe);
+  try {
+    await fs.promises.access(filePath, fs.constants.R_OK);
+  } catch {
+    return res.status(404).json({ success: false, message: "File not found" });
+  }
+  res.sendFile(filePath);
+}));
 
 if (ENV_VARS.NODE_ENV === "production") {
   app.use("/admin", express.static(path.join(path.resolve(), "admin/dist")));

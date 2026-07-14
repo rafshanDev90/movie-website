@@ -1,9 +1,8 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { useAdminStore } from "../store/adminStore";
+import { useAdminStore, api } from "../store/adminStore";
 import FileUpload from "../components/FileUpload";
 import toast, { Toaster } from "react-hot-toast";
-import axios from "axios";
 
 function MovieForm() {
   const { id } = useParams();
@@ -27,8 +26,10 @@ function MovieForm() {
 
   useEffect(() => {
     if (id) {
-      axios.get(`/api/v1/movies/${id}`).then((res) => {
+      api.get(`/movies/${id}`).then((res) => {
         setForm(res.data.data);
+      }).catch(() => {
+        toast.error("Failed to load movie");
       });
     }
   }, [id]);

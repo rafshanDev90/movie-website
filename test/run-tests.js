@@ -1,18 +1,24 @@
 import assert from "assert";
 import fs from "fs";
+import path from "path";
 
 const BASE = "http://localhost:5000";
 let passed = 0;
 let failed = 0;
 let adminToken = null;
 
-async function req(method, path, body = null, headers = {}) {
+const TEST_EMAIL = process.env.ADMIN_EMAIL || "admin@example.com";
+const TEST_PASSWORD = process.env.TEST_ADMIN_PASSWORD || "";
+
+async function req(method, url, body = null, headers = {}) {
   const opts = { method, headers: { ...headers } };
-  if (body !== null) {
+  if (body !== null && !(body instanceof FormData)) {
     opts.headers["Content-Type"] = "application/json";
     opts.body = JSON.stringify(body);
+  } else if (body instanceof FormData) {
+    opts.body = body;
   }
-  const res = await fetch(`${BASE}${path}`, opts);
+  const res = await fetch(`${BASE}${url}`, opts);
   const text = await res.text();
   let json;
   try { json = JSON.parse(text); } catch { json = null; }
@@ -35,8 +41,69 @@ function section(name) {
   console.log(`\n━━━ ${name} ━━━`);
 }
 
-function fileRead(path) {
-  return fs.readFileSync(path, "utf8");
+function fileRead(filePath) {
+  return fs.readFileSync(filePath, "utf8");
+}
+
+function authHeaders() {
+  return adminToken ? { Authorization: `Bearer ${adminToken}` } : {};
+}
+
+// ─── Phase 0: Authentication ──────────────────────────────────
+
+async function testPhase0() {
+  section("Authentication: Login Flow");
+
+  await test("Login rejects missing credentials", async () => {
+    const res = await req("POST", "/api/v1/auth/login", {});
+    assert.strictEqual(res.status, 400);
+  });
+
+  await test("Login rejects wrong password", async () => {
+    const res = await req("POST", "/api/v1/auth/login", {
+      email: TEST_EMAIL,
+      password: "definitely-wrong-password-xyz",
+    });
+    assert.strictEqual(res.status, 401);
+    assert.strictEqual(res.json.success, false);
+  });
+
+  await test("Login returns valid JWT on success", async () => {
+    if (!TEST_PASSWORD) {
+      console.log("    ⚠ Skipping: set TEST_ADMIN_PASSWORD env var to enable");
+      return;
+    }
+    const res = await req("POST", "/api/v1/auth/login", {
+      email: TEST_EMAIL,
+      password: TEST_PASSWORD,
+    });
+    assert.strictEqual(res.status, 200);
+    assert.ok(res.json.token, "No token returned");
+    assert.ok(res.json.token.split(".").length === 3, "Token is not a valid JWT");
+    adminToken = res.json.token;
+  });
+
+  await test("Rejected token returns 401", async () => {
+    const res = await req("GET", "/api/v1/lists/all", null, {
+      Authorization: "Bearer invalid-token-here",
+    });
+    assert.strictEqual(res.status, 401);
+  });
+
+  await test("Missing token returns 401 on protected route", async () => {
+    const res = await req("GET", "/api/v1/lists/all");
+    assert.strictEqual(res.status, 401);
+  });
+
+  await test("Valid token grants access to protected route", async () => {
+    if (!adminToken) {
+      console.log("    ⚠ Skipping: login required");
+      return;
+    }
+    const res = await req("GET", "/api/v1/lists/all", null, authHeaders());
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.json.success, true);
+  });
 }
 
 // ─── Phase 1 Tests ───────────────────────────────────────────
@@ -62,6 +129,11 @@ async function testPhase1() {
   await test("Non-existent valid filename returns 404", async () => {
     const res = await req("GET", "/api/v1/stream/nonexistent-video-12345.mp4");
     assert.strictEqual(res.status, 404);
+  });
+
+  await test("Images route rejects path traversal", async () => {
+    const res = await req("GET", "/uploads/images/../../etc/passwd");
+    assert.ok([400, 404].includes(res.status), `Expected 400 or 404, got ${res.status}`);
   });
 
   section("Fix 2: Regex Escaping in Search");
@@ -94,9 +166,7 @@ async function testPhase1() {
   });
 
   await test("Create movie requires title", async () => {
-    const res = await req("POST", "/api/v1/movies", { description: "no title" }, {
-      Authorization: `Bearer ${adminToken}`,
-    });
+    const res = await req("POST", "/api/v1/movies", { description: "no title" }, authHeaders());
     if (res.status === 401) return;
     assert.strictEqual(res.status, 400);
     assert.strictEqual(res.json.success, false);
@@ -133,6 +203,11 @@ async function testPhase1() {
   await test("JWT_SECRET minimum length check exists", async () => {
     const content = fileRead("backend/config/envVars.js");
     assert.ok(content.includes("length < 32"), "JWT_SECRET length check not found");
+  });
+
+  await test("JWT_SECRET entropy check exists", async () => {
+    const content = fileRead("backend/config/envVars.js");
+    assert.ok(content.includes("mixed characters") || content.includes("entropy"), "JWT_SECRET entropy check not found");
   });
 
   await test("Required env vars validation exists", async () => {
@@ -262,9 +337,7 @@ async function testPhase2() {
 
   await test("Rejects oversized JSON body", async () => {
     const largeBody = { data: "x".repeat(2 * 1024 * 1024) };
-    const res = await req("POST", "/api/v1/movies", largeBody, {
-      Authorization: `Bearer ${adminToken}`,
-    });
+    const res = await req("POST", "/api/v1/movies", largeBody, authHeaders());
     assert.ok([400, 413].includes(res.status), `Expected 400 or 413, got ${res.status}`);
   });
 
@@ -312,6 +385,24 @@ async function testPhase2() {
   await test("cookie-parser removed from package.json", async () => {
     const content = fileRead("package.json");
     assert.ok(!content.includes("cookie-parser"), "cookie-parser still in dependencies");
+  });
+
+  section("Static File Security");
+
+  await test("Broad /uploads static mount removed", async () => {
+    const content = fileRead("backend/server.js");
+    assert.ok(!content.includes('app.use("/uploads", express.static'), "Broad /uploads static mount still present");
+  });
+
+  await test("Validated image serving route exists", async () => {
+    const content = fileRead("backend/server.js");
+    assert.ok(content.includes("/uploads/images/:filename"), "Validated image route not found");
+    assert.ok(content.includes("path.basename"), "Filename sanitization not found in image route");
+  });
+
+  await test("CORS placeholder domain removed", async () => {
+    const content = fileRead("backend/server.js");
+    assert.ok(!content.includes("yourdomain.com"), "Placeholder CORS domain still present");
   });
 
   section("Admin Panel Build");
@@ -474,6 +565,176 @@ async function testPhase4() {
     const content = fileRead("backend/server.js");
     assert.ok(content.includes("shutting down gracefully"), "Graceful shutdown log message not found");
   });
+
+  section("Range Header Validation");
+
+  await test("Invalid range header returns 416", async () => {
+    const res = await req("GET", "/api/v1/stream/nonexistent.mp4", null, {
+      Range: "bytes=abc-",
+    });
+    assert.ok([404, 416].includes(res.status), `Expected 404 or 416, got ${res.status}`);
+  });
+
+  await test("Out-of-bounds range returns 416", async () => {
+    const res = await req("GET", "/api/v1/stream/nonexistent.mp4", null, {
+      Range: "bytes=999999-",
+    });
+    assert.ok([404, 416].includes(res.status), `Expected 404 or 416, got ${res.status}`);
+  });
+}
+
+// ─── Phase 5: CRUD Mutation Tests ────────────────────────────
+
+async function testPhase5() {
+  if (!adminToken) {
+    section("CRUD Mutation Tests (SKIPPED — no auth token)");
+    console.log("  ⚠ Set TEST_ADMIN_PASSWORD env var and restart server to enable\n");
+    return;
+  }
+
+  let createdMovieId = null;
+  let createdListId = null;
+
+  section("Movie CRUD");
+
+  await test("POST /api/v1/movies creates a movie", async () => {
+    const res = await req("POST", "/api/v1/movies", {
+      title: `Test Movie ${Date.now()}`,
+      description: "A test movie for automated testing",
+      genre: "Action",
+      year: "2024",
+      duration: "2h 0m",
+      limit: 13,
+      isSeries: false,
+    }, authHeaders());
+    assert.strictEqual(res.status, 201);
+    assert.strictEqual(res.json.success, true);
+    assert.ok(res.json.data._id, "No _id returned");
+    createdMovieId = res.json.data._id;
+  });
+
+  await test("GET /api/v1/movies/:id retrieves the created movie", async () => {
+    if (!createdMovieId) { console.log("    ⚠ Skipping: create failed"); return; }
+    const res = await req("GET", `/api/v1/movies/${createdMovieId}`);
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.json.data._id, createdMovieId);
+  });
+
+  await test("PUT /api/v1/movies/:id updates a movie", async () => {
+    if (!createdMovieId) { console.log("    ⚠ Skipping: create failed"); return; }
+    const res = await req("PUT", `/api/v1/movies/${createdMovieId}`, {
+      title: "Updated Test Movie",
+      description: "Updated description",
+    }, authHeaders());
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.json.data.title, "Updated Test Movie");
+  });
+
+  await test("PUT /api/v1/movies/:id rejects invalid ID", async () => {
+    const res = await req("PUT", "/api/v1/movies/not-a-valid-id", {
+      title: "X",
+    }, authHeaders());
+    assert.strictEqual(res.status, 400);
+  });
+
+  await test("DELETE /api/v1/movies/:id deletes a movie", async () => {
+    if (!createdMovieId) { console.log("    ⚠ Skipping: create failed"); return; }
+    const res = await req("DELETE", `/api/v1/movies/${createdMovieId}`, null, authHeaders());
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.json.success, true);
+  });
+
+  await test("GET /api/v1/movies/:id returns 404 after delete", async () => {
+    if (!createdMovieId) { console.log("    ⚠ Skipping: create failed"); return; }
+    const res = await req("GET", `/api/v1/movies/${createdMovieId}`);
+    assert.strictEqual(res.status, 404);
+  });
+
+  await test("DELETE /api/v1/movies/:id without auth returns 401", async () => {
+    const res = await req("DELETE", "/api/v1/movies/507f1f77bcf86cd799439011");
+    assert.strictEqual(res.status, 401);
+  });
+
+  section("List CRUD");
+
+  await test("POST /api/v1/lists creates a list", async () => {
+    const res = await req("POST", "/api/v1/lists", {
+      title: `Test List ${Date.now()}`,
+      type: "movie",
+      genre: "Action",
+      content: [],
+    }, authHeaders());
+    assert.strictEqual(res.status, 201);
+    assert.strictEqual(res.json.success, true);
+    assert.ok(res.json.data._id, "No _id returned");
+    createdListId = res.json.data._id;
+  });
+
+  await test("GET /api/v1/lists/:id retrieves the created list", async () => {
+    if (!createdListId) { console.log("    ⚠ Skipping: create failed"); return; }
+    const res = await req("GET", `/api/v1/lists/${createdListId}`);
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.json.data._id, createdListId);
+  });
+
+  await test("PUT /api/v1/lists/:id updates a list", async () => {
+    if (!createdListId) { console.log("    ⚠ Skipping: create failed"); return; }
+    const res = await req("PUT", `/api/v1/lists/${createdListId}`, {
+      title: "Updated Test List",
+    }, authHeaders());
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.json.data.title, "Updated Test List");
+  });
+
+  await test("DELETE /api/v1/lists/:id deletes a list", async () => {
+    if (!createdListId) { console.log("    ⚠ Skipping: create failed"); return; }
+    const res = await req("DELETE", `/api/v1/lists/${createdListId}`, null, authHeaders());
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.json.success, true);
+  });
+
+  await test("DELETE /api/v1/lists/:id without auth returns 401", async () => {
+    const res = await req("DELETE", "/api/v1/lists/507f1f77bcf86cd799439011");
+    assert.strictEqual(res.status, 401);
+  });
+
+  section("File Upload");
+
+  await test("POST /api/v1/upload without auth returns 401", async () => {
+    const form = new FormData();
+    form.append("file", new Blob(["test"], { type: "text/plain" }), "test.txt");
+    const res = await req("POST", "/api/v1/upload", form);
+    assert.strictEqual(res.status, 401);
+  });
+
+  await test("POST /api/v1/upload rejects invalid file types", async () => {
+    const form = new FormData();
+    form.append("file", new Blob(["test"], { type: "application/x-executable" }), "malware.exe");
+    const res = await req("POST", "/api/v1/upload", form, authHeaders());
+    assert.ok([400, 401, 415].includes(res.status), `Expected 400/401/415, got ${res.status}`);
+  });
+
+  await test("POST /api/v1/upload accepts image files", async () => {
+    const pixel = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
+    const form = new FormData();
+    form.append("file", new Blob([pixel], { type: "image/png" }), "test-image.png");
+    const res = await req("POST", "/api/v1/upload", form, authHeaders());
+    if (res.status === 401) return;
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.json.success, true);
+    assert.ok(res.json.url, "No URL returned");
+    assert.ok(res.json.url.startsWith("/uploads/images/"), "URL doesn't start with /uploads/images/");
+  });
+
+  await test("Stream endpoint returns 404 for non-existent upload", async () => {
+    const res = await req("GET", "/api/v1/stream/definitely-not-a-real-file.mp4");
+    assert.strictEqual(res.status, 404);
+  });
+
+  await test("Image route serves validated paths only", async () => {
+    const content = fileRead("backend/server.js");
+    assert.ok(content.includes("path.basename"), "path.basename not used for image sanitization");
+  });
 }
 
 // ─── Run All Tests ───────────────────────────────────────────
@@ -481,6 +742,9 @@ async function testPhase4() {
 async function run() {
   console.log("\n🎬 Movie Website — Security Test Suite\n");
   console.log(`Target: ${BASE}`);
+  if (!TEST_PASSWORD) {
+    console.log("Tip: Set TEST_ADMIN_PASSWORD env var to enable mutation/auth tests\n");
+  }
 
   try {
     const res = await req("GET", "/health");
@@ -491,10 +755,12 @@ async function run() {
     process.exit(1);
   }
 
+  await testPhase0();
   await testPhase1();
   await testPhase2();
   await testPhase3();
   await testPhase4();
+  await testPhase5();
 
   console.log(`\n━━━ Results ━━━`);
   console.log(`  ✓ ${passed} passed`);

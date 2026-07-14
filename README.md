@@ -100,7 +100,7 @@ Edit `.env` with your settings:
 ```env
 PORT=5000
 MONGO_URI=mongodb://localhost:27017/movie-website
-JWT_SECRET=your-secret-key
+JWT_SECRET=replace-with-at-least-32-characters-use-openssl-rand-base64-48
 ADMIN_EMAIL=admin@example.com
 ADMIN_PASSWORD=your-password
 NODE_ENV=development

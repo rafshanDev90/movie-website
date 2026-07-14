@@ -1,8 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { useAdminStore } from "../store/adminStore";
+import { useAdminStore, api } from "../store/adminStore";
 import toast, { Toaster } from "react-hot-toast";
-import axios from "axios";
 
 function ListForm() {
   const { id } = useParams();
@@ -18,9 +17,11 @@ function ListForm() {
   });
 
   useEffect(() => {
-    axios.get("/api/v1/movies").then((res) => setAllMovies(res.data.data));
+    api.get("/movies").then((res) => setAllMovies(res.data.data)).catch(() => {
+      toast.error("Failed to load movies");
+    });
     if (id) {
-      axios.get(`/api/v1/lists/${id}`).then((res) => {
+      api.get(`/lists/${id}`).then((res) => {
         const list = res.data.data;
         setForm({
           title: list.title,
@@ -28,6 +29,8 @@ function ListForm() {
           genre: list.genre || "",
           content: list.content?.map((m) => m._id) || [],
         });
+      }).catch(() => {
+        toast.error("Failed to load list");
       });
     }
   }, [id]);

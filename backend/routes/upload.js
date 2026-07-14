@@ -62,7 +62,13 @@ router.get("/stream/:filename", asyncHandler(async (req, res) => {
   if (range) {
     const parts = range.replace(/bytes=/, "").split("-");
     const start = parseInt(parts[0], 10);
+    if (Number.isNaN(start) || start < 0 || start >= fileSize) {
+      return res.status(416).json({ success: false, message: "Range not satisfiable" });
+    }
     const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+    if (Number.isNaN(end) || end < start || end >= fileSize) {
+      return res.status(416).json({ success: false, message: "Range not satisfiable" });
+    }
     const chunkSize = end - start + 1;
 
     const file = fs.createReadStream(filePath, { start, end });

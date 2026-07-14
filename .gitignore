@@ -9,4 +9,3 @@ admin/dist/
 client/node_modules/
 client/dist/
 .Antigravity/
-test/run-tests.js
