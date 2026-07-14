@@ -12,7 +12,7 @@ function App() {
   const token = useAdminStore((s) => s.token);
 
   return (
-    <BrowserRouter>
+    <BrowserRouter basename="/admin">
       <Routes>
         <Route path="/login" element={token ? <Navigate to="/" /> : <Login />} />
         <Route element={token ? <Layout /> : <Navigate to="/login" />}>
