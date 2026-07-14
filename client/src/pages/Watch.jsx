@@ -43,7 +43,7 @@ function Watch() {
     <div className="min-h-screen bg-black">
       <div className="fixed top-0 left-0 right-0 z-50 bg-black/80 px-4 md:px-12 py-3 flex items-center justify-between">
         <Link to="/" className="text-red-600 font-bold text-xl">
-          MOVIEFLIX
+        Shakil Movie Collection
         </Link>
         <h2 className="text-sm md:text-base font-medium truncate ml-4">{movie.title}</h2>
       </div>
