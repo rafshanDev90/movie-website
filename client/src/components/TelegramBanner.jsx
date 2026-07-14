@@ -3,7 +3,7 @@ const TELEGRAM_URL = "https://t.me/Shakil_Bangla_Movie";
 function TelegramBanner() {
   return (
     <a
-      href={TELEGRAM_URL}
+      href={TELEGRAM_URL|| "https://t.me/Shakil_Bangla_Movie"}
       target="_blank"
       rel="noopener noreferrer"
       className="block mx-4 md:mx-12 my-4 rounded overflow-hidden transition-opacity hover:opacity-90"
